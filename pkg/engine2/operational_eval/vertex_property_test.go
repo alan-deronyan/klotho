@@ -1,15 +1,36 @@
 package operational_eval
 
 import (
+	"fmt"
+	reflect "reflect"
 	"testing"
 
 	"github.com/dominikbraun/graph"
 	construct "github.com/klothoplatform/klotho/pkg/construct2"
+	"github.com/klothoplatform/klotho/pkg/engine2/enginetesting"
 	knowledgebase "github.com/klothoplatform/klotho/pkg/knowledge_base2"
 	"github.com/klothoplatform/klotho/pkg/knowledge_base2/properties"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	gomock "go.uber.org/mock/gomock"
 )
+
+type dynDataMatcher struct {
+	data knowledgebase.DynamicValueData
+}
+
+func (d dynDataMatcher) Matches(x interface{}) bool {
+	dynData, ok := x.(knowledgebase.DynamicValueData)
+	if !ok {
+		return false
+	}
+
+	return dynData.Resource.Matches(d.data.Resource) && dynData.Path.String() == d.data.Path.String() && reflect.DeepEqual(dynData.Edge, d.data.Edge)
+}
+
+func (d dynDataMatcher) String() string {
+	return fmt.Sprintf("is equal to %v", d.data)
+}
 
 func Test_propertyVertex_evaluateResourceOperational(t *testing.T) {
 	rule := &knowledgebase.PropertyRule{
@@ -117,7 +138,13 @@ func Test_propertyVertex_evaluateEdgeOperational(t *testing.T) {
 func Test_propertyVertex_Dependencies(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	dcap := NewMockdependencyCapturer(ctrl)
-
+	resource := &construct.Resource{ID: construct.ResourceId{Name: "test"}, Properties: construct.Properties{
+		"test": "test",
+	}}
+	path, err := resource.PropertyPath("test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	type fields struct {
 		Ref           construct.PropertyRef
 		Template      knowledgebase.Property
@@ -135,7 +162,7 @@ func Test_propertyVertex_Dependencies(t *testing.T) {
 			fields: fields{
 				Ref: construct.PropertyRef{
 					Property: "test",
-					Resource: construct.ResourceId{Name: "test"},
+					Resource: resource.ID,
 				},
 				Template: &properties.StringProperty{
 					PropertyDetails: knowledgebase.PropertyDetails{
@@ -146,11 +173,15 @@ func Test_propertyVertex_Dependencies(t *testing.T) {
 				},
 			},
 			mocks: func() {
-				dcap.EXPECT().ExecutePropertyRule(knowledgebase.DynamicValueData{
-					Resource: construct.ResourceId{Name: "test"},
-				}, knowledgebase.PropertyRule{
-					If: "test",
-				}).Return(nil)
+				dcap.EXPECT().ExecutePropertyRule(dynDataMatcher{
+					data: knowledgebase.DynamicValueData{
+						Resource: resource.ID,
+						Path:     path,
+					},
+				},
+					knowledgebase.PropertyRule{
+						If: "test",
+					}).Return(nil)
 			},
 		},
 		{
@@ -158,7 +189,7 @@ func Test_propertyVertex_Dependencies(t *testing.T) {
 			fields: fields{
 				Ref: construct.PropertyRef{
 					Property: "test",
-					Resource: construct.ResourceId{Name: "test"},
+					Resource: resource.ID,
 				},
 				EdgeRules: map[construct.SimpleEdge][]knowledgebase.OperationalRule{
 					{
@@ -179,13 +210,11 @@ func Test_propertyVertex_Dependencies(t *testing.T) {
 				},
 			},
 			mocks: func() {
-				dcap.EXPECT().ExecuteOpRule(knowledgebase.DynamicValueData{
-					Resource: construct.ResourceId{Name: "test"},
-				}, knowledgebase.OperationalRule{
+				dcap.EXPECT().ExecuteOpRule(gomock.Any(), knowledgebase.OperationalRule{
 					If: "testR",
 				}).Return(nil)
 				dcap.EXPECT().ExecuteOpRule(knowledgebase.DynamicValueData{
-					Resource: construct.ResourceId{Name: "test"},
+					Resource: resource.ID,
 					Edge:     &graph.Edge[construct.ResourceId]{Source: construct.ResourceId{Name: "test"}, Target: construct.ResourceId{Name: "test2"}},
 				}, knowledgebase.OperationalRule{
 					If: "testE",
@@ -202,8 +231,16 @@ func Test_propertyVertex_Dependencies(t *testing.T) {
 				ResourceRules: tt.fields.ResourceRules,
 			}
 			tt.mocks()
-			eval := &Evaluator{}
-			err := prop.Dependencies(eval, dcap)
+			testSol := enginetesting.NewTestSolution()
+			testSol.KB.On("GetResourceTemplate", mock.Anything).Return(&knowledgebase.ResourceTemplate{}, nil)
+			err := testSol.RawView().AddVertex(resource)
+			if !assert.NoError(t, err) {
+				return
+			}
+			eval := &Evaluator{
+				Solution: testSol,
+			}
+			err = prop.Dependencies(eval, dcap)
 			if tt.wantErr {
 				assert.Error(t, err)
 				return
