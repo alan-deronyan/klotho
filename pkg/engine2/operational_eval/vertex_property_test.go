@@ -5,6 +5,8 @@ import (
 
 	"github.com/dominikbraun/graph"
 	construct "github.com/klothoplatform/klotho/pkg/construct2"
+	"github.com/klothoplatform/klotho/pkg/engine2/constraints"
+	"github.com/klothoplatform/klotho/pkg/engine2/enginetesting"
 	knowledgebase "github.com/klothoplatform/klotho/pkg/knowledge_base2"
 	"github.com/klothoplatform/klotho/pkg/knowledge_base2/properties"
 	"github.com/stretchr/testify/assert"
@@ -109,6 +111,73 @@ func Test_propertyVertex_evaluateEdgeOperational(t *testing.T) {
 				return
 			}
 			assert.NoError(err)
+			ctrl.Finish()
+		})
+	}
+}
+
+func Test_propertyVertex_evaluateConstraints(t *testing.T) {
+	id := construct.ResourceId{Provider: "test", Type: "test", Name: "test"}
+	type fields struct {
+		Ref       construct.PropertyRef
+		EdgeRules map[construct.SimpleEdge][]knowledgebase.OperationalRule
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		res     *construct.Resource
+		mocks   func(mockSol *enginetesting.MockSolution, mockProperty *MockProperty)
+		wantErr bool
+	}{
+		{
+			name: "existing value and no constraints",
+			fields: fields{
+				Ref: construct.PropertyRef{
+					Resource: id,
+					Property: "test",
+				},
+			},
+			res: &construct.Resource{ID: id, Properties: construct.Properties{"test": "test"}},
+			mocks: func(mockSol *enginetesting.MockSolution, mockProperty *MockProperty) {
+				mockSol.On("Constraints").Return(&constraints.Constraints{})
+				mockSol.On("DataflowGraph").Return(construct.NewGraph())
+			},
+		},
+		{
+			name: "no value and no constraints sets default",
+			fields: fields{
+				Ref: construct.PropertyRef{
+					Resource: id,
+					Property: "test",
+				},
+			},
+			res: &construct.Resource{ID: id},
+			mocks: func(mockSol *enginetesting.MockSolution, mockProperty *MockProperty) {
+				mockSol.On("Constraints").Return(&constraints.Constraints{})
+				mockSol.On("DataflowGraph").Return(construct.NewGraph())
+				mockProperty.EXPECT().GetDefaultValue(gomock.Any(),
+					knowledgebase.DynamicValueData{Resource: id}).Return("test", nil).Times(1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			mockSol := &enginetesting.MockSolution{}
+			mockProperty := NewMockProperty(ctrl)
+			tt.mocks(mockSol, mockProperty)
+			v := &propertyVertex{
+				Ref:       tt.fields.Ref,
+				Template:  mockProperty,
+				EdgeRules: tt.fields.EdgeRules,
+			}
+			err := v.evaluateConstraints(mockSol, tt.res)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			mockSol.AssertExpectations(t)
 			ctrl.Finish()
 		})
 	}
